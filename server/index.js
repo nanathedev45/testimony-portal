@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 
 mongoose.connect(process.env.MONGO_URI)
-.then(() => console.log('MongoDB running'))
+.then(() => console.log('MongoDB is running'))
 .catch((err) => console.error('Error', err));
 
 

@@ -7,6 +7,10 @@ const testimonySchema = new mongoose.Schema(
             required: true,
             trim: true,
         },
+        deletedAt: {
+            type: Date,
+            default: null,
+        },
     },
     { timestamps: true }
 );

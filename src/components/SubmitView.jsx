@@ -35,7 +35,7 @@ function SubmitView() {
 
     return (
         <section className="card">
-            <h2>Testimony Portal</h2>
+            <h2>Wind Of Faith 2026 Anonymous Testimony Portal</h2>
             <p className="muted">Share your testimony. Your message is anonymous.</p>
 
             <form onSubmit={handleSubmit}>

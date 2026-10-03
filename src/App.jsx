@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import './App.css';
 import SubmitView from './components/SubmitView';
 import AdminView from './components/AdminView';
+import Footer from './components/Footer';
 import logo from './assets/church-logo.jpg';
 
 function App() {
@@ -22,6 +23,8 @@ function App() {
                     <Route path="*" element={<p className="muted">Page not found.</p>} />
                 </Routes>
             </main>
+
+            <Footer />
         </>
     );
 }

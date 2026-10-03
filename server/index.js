@@ -6,10 +6,22 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { v2 as cloudinary } from 'cloudinary';
+import multer from 'multer';
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// ---- Multer (in-memory, for forwarding files to Python) ----
+const upload = multer({ storage: multer.memoryStorage() });
+
+// ---- Cloudinary config ----
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 // ---- Trash config ----
 const TRASH_DAYS = 15;
@@ -42,16 +54,135 @@ async function purgeExpired() {
     });
 }
 
-// logic for submitting testimonies
-app.post('/testimonies', async (req, res) => {
+// ---- Cloudinary signature route (public) ----
+app.post('/cloudinary/signature', (req, res) => {
     try {
-        const {text} = req.body;
-        const newTestimony = await Testimony.create({text});
-        res.status(201).json(newTestimony);
+        const timestamp = Math.round(Date.now() / 1000);
+        const paramsToSign = {
+            timestamp,
+            folder: 'testimonies',
+        };
+
+        const signature = cloudinary.utils.api_sign_request(
+            paramsToSign,
+            process.env.CLOUDINARY_API_SECRET
+        );
+
+        res.json({
+            signature,
+            timestamp,
+            apiKey: process.env.CLOUDINARY_API_KEY,
+            cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+            folder: 'testimonies',
+            resourceType: 'video',
+        });
     } catch (err) {
-        res.status(400).json({error: err.message});
+        res.status(500).json({ error: err.message });
     }
 });
+
+// ---- logic for submitting testimonies (text OR voice) ----
+app.post('/testimonies', async (req, res) => {
+    try {
+        const { text, audioUrl, audioPublicId } = req.body;
+
+        if (!text?.trim() && !audioUrl) {
+            return res.status(400).json({ error: 'Provide text or a voice recording' });
+        }
+
+        // ---- Text testimony: save as-is ----
+        if (text?.trim()) {
+            const newTestimony = await Testimony.create({
+                text: text.trim(),
+            });
+            return res.status(201).json(newTestimony);
+        }
+
+        // ---- Voice testimony: anonymize first ----
+        const pyRes = await fetch(`${process.env.PYTHON_SERVICE_URL}/anonymize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio_url: audioUrl }),
+        });
+
+        if (!pyRes.ok) {
+            const errBody = await pyRes.text();
+            console.error('Python anonymize failed:', errBody);
+            return res.status(500).json({ error: 'Voice anonymization failed' });
+        }
+
+        const { audio_url: anonymizedUrl, public_id: anonymizedPublicId } =
+            await pyRes.json();
+
+        if (audioPublicId) {
+            try {
+                await cloudinary.uploader.destroy(audioPublicId, {
+                    resource_type: 'video',
+                });
+            } catch (err) {
+                console.error('Failed to delete original audio:', err.message);
+            }
+        }
+
+        const newTestimony = await Testimony.create({
+            audioUrl: anonymizedUrl,
+            audioPublicId: anonymizedPublicId,
+        });
+
+        res.status(201).json(newTestimony);
+    } catch (err) {
+        console.error('POST /testimonies failed:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---- Render a voice testimony as a video ----
+// The frontend sends the rendered PNG (multipart) + audio URL.
+// We forward both to Python, which runs ffmpeg and returns an MP4.
+app.post(
+    '/testimonies/render-video',
+    requireAdmin,
+    upload.single('image'),
+    async (req, res) => {
+        try {
+            if (!req.file) {
+                return res.status(400).json({ error: 'No image provided' });
+            }
+
+            const { audio_url } = req.body;
+            if (!audio_url) {
+                return res.status(400).json({ error: 'No audio_url provided' });
+            }
+
+            const formData = new FormData();
+            formData.append(
+                'image',
+                new Blob([req.file.buffer], { type: 'image/png' }),
+                'card.png'
+            );
+            formData.append('audio_url', audio_url);
+
+            const pyRes = await fetch(
+                `${process.env.PYTHON_SERVICE_URL}/render-video`,
+                { method: 'POST', body: formData }
+            );
+
+            if (!pyRes.ok) {
+                const errText = await pyRes.text();
+                console.error('Python render-video failed:', errText);
+                return res.status(500).json({ error: 'Video render failed' });
+            }
+
+            const arrayBuffer = await pyRes.arrayBuffer();
+            res.set('Content-Type', 'video/mp4');
+            res.set('Content-Disposition', 'attachment; filename="testimony.mp4"');
+            res.send(Buffer.from(arrayBuffer));
+        } catch (err) {
+            console.error('render-video proxy failed:', err);
+            res.status(500).json({ error: err.message });
+        }
+    }
+);
 
 // live testimonies only (admin)
 app.get('/testimonies', requireAdmin, async (req, res) => {
@@ -81,6 +212,12 @@ app.delete('/testimonies/:id', requireAdmin, async (req, res) => {
     }
 });
 
+// TEMPORARY — remove after testing
+app.get('/debug/audio-url', async (req, res) => {
+    const t = await Testimony.findOne({ audioUrl: { $ne: null } });
+    res.json({ audioUrl: t?.audioUrl || null });
+});
+
 // restore from trash (admin)
 app.post('/testimonies/:id/restore', requireAdmin, async (req, res) => {
     try {
@@ -104,6 +241,17 @@ app.delete('/testimonies/:id/permanent', requireAdmin, async (req, res) => {
             deletedAt: { $ne: null },
         });
         if (!deleted) return res.status(404).json({ error: 'Not found or not in trash' });
+
+        if (deleted.audioPublicId) {
+            try {
+                await cloudinary.uploader.destroy(deleted.audioPublicId, {
+                    resource_type: 'video',
+                });
+            } catch (err) {
+                console.error('Cloudinary delete failed:', err.message);
+            }
+        }
+
         res.json({ ok: true, _id: deleted._id });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -123,13 +271,9 @@ setInterval(async () => {
 }, 60 * 60 * 1000);
 
 // ---- Static frontend (production only) ----
-// Only active when a `dist/` folder exists (i.e. after `npm run build`).
-// In dev, this block is skipped entirely — Vite handles the frontend.
 if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
 
-    // Catch-all: any non-API GET → serve index.html so React Router can take over.
-    // MUST be the last route registered, after all API routes.
     app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
     });

@@ -249,7 +249,15 @@ function AdminView() {
                         )}
                         {activeList.map((t) => (
                             <li key={t._id}>
-                                <p>{t.text}</p>
+                                {t.text && <p>{t.text}</p>}
+                                {t.audioUrl && (
+                                    <audio
+                                        controls
+                                        src={t.audioUrl}
+                                        className="admin-audio"
+                                        preload="metadata"
+                                    />
+                                )}
                                 <div className="testimony-meta">
                                     <div className="meta-left">
                                         <time>
@@ -257,7 +265,7 @@ function AdminView() {
                                                 ? new Date(t.createdAt).toLocaleString()
                                                 : `Deleted ${new Date(t.deletedAt).toLocaleString()}`}
                                         </time>
-                                        {tab === 'live' && <ShareButton testimony={t} />}
+                                        {tab === 'live' && <ShareButton testimony={t} adminKey={key} />}
                                     </div>
 
                                     {tab === 'live' ? (

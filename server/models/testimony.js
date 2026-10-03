@@ -4,8 +4,16 @@ const testimonySchema = new mongoose.Schema(
     {
         text: {
             type: String,
-            required: true,
             trim: true,
+            // no longer required — voice testimonies won't have text
+        },
+        audioUrl: {
+            type: String,
+            default: null,
+        },
+        audioPublicId: {
+            type: String,
+            default: null,
         },
         deletedAt: {
             type: Date,

@@ -1,37 +1,34 @@
 import { useState, useEffect, useCallback } from 'react';
 import { renderTestimonyImage } from '../lib/renderTestimonyImage';
 
-// Swap this when you deploy
+const API_URL = `${window.location.protocol}//${window.location.hostname}:3000`;
 const SHARE_URL = 'https://your-domain.com';
 const SHARE_CAPTION = `You can share your testimonies at ${SHARE_URL}`;
 const SHARE_TITLE = 'My Testimony';
 
-export default function ShareButton({ testimony }) {
-    const [busy, setBusy] = useState(null); // 'share' | 'download' | null
+export default function ShareButton({ testimony, adminKey }) {
+    const [busy, setBusy] = useState(null);   // 'share' | 'download' | null
     const [error, setError] = useState('');
     const [notice, setNotice] = useState('');
-    const [file, setFile] = useState(null);
     const [blob, setBlob] = useState(null);
     const [renderError, setRenderError] = useState('');
 
-    // Pre-render the image on mount so the user gesture stays intact
-    // when they actually tap Share.
+    // ⚠️ TEMPORARY preview — remove later
+    const [previewUrl, setPreviewUrl] = useState(null);
+
+    const isVoice = !!testimony.audioUrl;
+
+    // Pre-render the PNG card on mount
     useEffect(() => {
         let cancelled = false;
 
         (async () => {
             try {
                 const b = await renderTestimonyImage(testimony);
-                if (cancelled) return;
-                setBlob(b);
-                setFile(
-                    new File([b], `testimony-${testimony._id}.png`, {
-                        type: 'image/png',
-                    })
-                );
+                if (!cancelled) setBlob(b);
             } catch (err) {
                 if (!cancelled) {
-                    setRenderError(err.message || 'Failed to render image');
+                    setRenderError(err.message || 'Failed to render card');
                 }
             }
         })();
@@ -41,19 +38,16 @@ export default function ShareButton({ testimony }) {
         };
     }, [testimony]);
 
-    const triggerDownload = useCallback(
-        (imageBlob, id) => {
-            const url = URL.createObjectURL(imageBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `testimony-${id}.png`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-        },
-        []
-    );
+    const triggerDownload = useCallback((dataBlob, id, ext) => {
+        const url = URL.createObjectURL(dataBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `testimony-${id}.${ext}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }, []);
 
     async function copyCaption() {
         try {
@@ -64,15 +58,41 @@ export default function ShareButton({ testimony }) {
         }
     }
 
-    async function downloadImage() {
+    // Sends the PNG + audio URL to Express, gets back an MP4 blob
+    async function renderVideoMp4() {
+        const formData = new FormData();
+        formData.append('image', blob, 'card.png');
+        formData.append('audio_url', testimony.audioUrl);
+
+        const res = await fetch(`${API_URL}/testimonies/render-video`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${adminKey}`,
+            },
+            body: formData,
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Video render failed');
+        }
+
+        return res.blob();
+    }
+
+    async function downloadMedia() {
         setBusy('download');
         setError('');
         setNotice('');
 
         try {
-            // Reuse the pre-rendered blob if we have it; otherwise render now.
-            const imageBlob = blob || (await renderTestimonyImage(testimony));
-            triggerDownload(imageBlob, testimony._id);
+            if (isVoice) {
+                const mp4Blob = await renderVideoMp4();
+                triggerDownload(mp4Blob, testimony._id, 'mp4');
+            } else {
+                const imageBlob = blob || (await renderTestimonyImage(testimony));
+                triggerDownload(imageBlob, testimony._id, 'png');
+            }
         } catch (err) {
             setError(err.message || 'Download failed');
         } finally {
@@ -80,60 +100,56 @@ export default function ShareButton({ testimony }) {
         }
     }
 
-    async function shareImage() {
-        if (renderError) {
-            setError('Image is not ready yet. Try again in a moment.');
-            return;
-        }
-        if (!file) {
-            setError('Still preparing the image…');
-            return;
-        }
-
+    async function shareMedia() {
         setBusy('share');
         setError('');
         setNotice('');
 
-        const shareData = {
-            files: [file],
-            title: SHARE_TITLE,
-            text: SHARE_CAPTION,
-        };
-
-        // ---- Path 1: Native share sheet with file (mobile iOS/Android,
-        //              some desktop browsers). Gesture is preserved because
-        //              we're not awaiting anything before this call. ----
-        if (
-            typeof navigator !== 'undefined' &&
-            typeof navigator.share === 'function' &&
-            typeof navigator.canShare === 'function' &&
-            navigator.canShare({ files: [file] })
-        ) {
-            try {
-                await navigator.share(shareData);
-                setBusy(null);
-                return;
-            } catch (err) {
-                // User cancelled — that's fine, do nothing.
-                if (err.name === 'AbortError') {
-                    setBusy(null);
-                    return;
-                }
-                // Otherwise fall through to the fallback below.
-            }
-        }
-
-        // ---- Path 2: Fallback for desktop / unsupported browsers ----
-        // Download the image + copy the caption so the user can paste it
-        // into whatever app they want.
         try {
-            triggerDownload(blob, testimony._id);
+            let shareFile;
+
+            if (isVoice) {
+                const mp4Blob = await renderVideoMp4();
+                shareFile = new File(
+                    [mp4Blob],
+                    `testimony-${testimony._id}.mp4`,
+                    { type: 'video/mp4' }
+                );
+            } else {
+                const imageBlob = blob || (await renderTestimonyImage(testimony));
+                shareFile = new File(
+                    [imageBlob],
+                    `testimony-${testimony._id}.png`,
+                    { type: 'image/png' }
+                );
+            }
+
+            if (
+                typeof navigator !== 'undefined' &&
+                typeof navigator.share === 'function' &&
+                typeof navigator.canShare === 'function' &&
+                navigator.canShare({ files: [shareFile] })
+            ) {
+                try {
+                    await navigator.share({
+                        files: [shareFile],
+                        title: SHARE_TITLE,
+                        text: SHARE_CAPTION,
+                    });
+                    return;
+                } catch (err) {
+                    if (err.name === 'AbortError') return;
+                }
+            }
+
+            const ext = isVoice ? 'mp4' : 'png';
+            triggerDownload(shareFile, testimony._id, ext);
             const copied = await copyCaption();
 
             setNotice(
                 copied
-                    ? 'Image downloaded and caption copied. Paste the caption when you share.'
-                    : 'Image downloaded. Copy the caption below when you share.'
+                    ? `${ext.toUpperCase()} downloaded and caption copied. Paste the caption when you share.`
+                    : `${ext.toUpperCase()} downloaded. Copy the caption below when you share.`
             );
         } catch (err) {
             setError(err.message || 'Share failed');
@@ -142,34 +158,82 @@ export default function ShareButton({ testimony }) {
         }
     }
 
-    const notReady = busy !== null || (!file && !renderError);
+    // ⚠️ TEMPORARY preview
+    async function previewImage() {
+        try {
+            const b = blob || (await renderTestimonyImage(testimony));
+            setPreviewUrl(URL.createObjectURL(b));
+        } catch (err) {
+            setError(err.message || 'Preview failed');
+        }
+    }
+
+    const notReady = busy !== null || !blob;
 
     return (
         <div className="share-actions">
             <button
-                onClick={shareImage}
+                onClick={shareMedia}
                 disabled={notReady || !!renderError}
-                title="Share as image"
+                title={isVoice ? 'Share as video' : 'Share as image'}
             >
-                {busy === 'share'
-                    ? 'Sharing…'
-                    : !file && !renderError
-                        ? 'Preparing…'
-                        : 'Share'}
+                {busy === 'share' ? 'Sharing…' : !blob ? 'Preparing…' : 'Share'}
             </button>
 
             <button
-                onClick={downloadImage}
-                disabled={busy !== null || !!renderError}
-                title="Download as image"
+                onClick={downloadMedia}
+                disabled={notReady || !!renderError}
+                title={isVoice ? 'Download as video' : 'Download as image'}
             >
-                {busy === 'download' ? 'Saving…' : 'Download'}
+                {busy === 'download'
+                    ? isVoice ? 'Rendering…' : 'Saving…'
+                    : 'Download'}
+            </button>
+
+            {/* ⚠️ TEMPORARY preview button — remove later */}
+            <button
+                type="button"
+                onClick={previewImage}
+                disabled={!blob}
+                title="Preview card"
+            >
+                Preview
             </button>
 
             {error && <span className="error-inline">{error}</span>}
             {!error && notice && <span className="notice-inline">{notice}</span>}
             {renderError && !error && (
                 <span className="error-inline">{renderError}</span>
+            )}
+
+            {previewUrl && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.85)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 9999,
+                        padding: 24,
+                    }}
+                    onClick={() => {
+                        URL.revokeObjectURL(previewUrl);
+                        setPreviewUrl(null);
+                    }}
+                >
+                    <img
+                        src={previewUrl}
+                        alt="testimony preview"
+                        style={{
+                            maxWidth: '90vw',
+                            maxHeight: '90vh',
+                            borderRadius: 8,
+                            boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
+                        }}
+                    />
+                </div>
             )}
         </div>
     );

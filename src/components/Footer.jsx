@@ -5,7 +5,7 @@ import instagramLogo from '../assets/ig-logo.jpg';
 const SOCIALS = [
     {
         name: 'Facebook',
-        href: 'https://facebook.com/yourpage',
+        href: 'https://www.facebook.com/share/1CcQQwiwAv/',
         logo: facebookLogo,
     },
     {

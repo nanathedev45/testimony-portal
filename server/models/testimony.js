@@ -5,7 +5,6 @@ const testimonySchema = new mongoose.Schema(
         text: {
             type: String,
             trim: true,
-            // no longer required — voice testimonies won't have text
         },
         audioUrl: {
             type: String,
@@ -13,6 +12,10 @@ const testimonySchema = new mongoose.Schema(
         },
         audioPublicId: {
             type: String,
+            default: null,
+        },
+        waveformData: {
+            type: [Number],
             default: null,
         },
         deletedAt: {

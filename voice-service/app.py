@@ -1,14 +1,17 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.background import BackgroundTasks
 from pydantic import BaseModel
 import traceback
 import os
 import tempfile
+import shutil
 
 from audio import download_audio, upload_audio, cleanup
 from anonymize import anonymize_voice
-from render import render_video
+from render import render_video_from_frames
+from waveform import extract_waveform
+from frames import generate_frames
 
 app = FastAPI(title="Voice Service", version="0.1.0")
 
@@ -23,6 +26,17 @@ class AnonymizeResponse(BaseModel):
     audio_url: str
     public_id: str
     duration_seconds: float
+
+
+class WaveformResponse(BaseModel):
+    waveform: list[float]
+
+
+class RenderVideoRequest(BaseModel):
+    audio_url: str
+    waveform: list[float]
+    duration_seconds: float
+    created_at: str
 
 
 @app.get("/health")
@@ -61,36 +75,61 @@ def anonymize(req: AnonymizeRequest):
         cleanup(input_path, output_path)
 
 
+@app.post("/extract-waveform", response_model=WaveformResponse)
+def extract_waveform_endpoint(req: AnonymizeRequest):
+    audio_path = None
+    try:
+        audio_path = download_audio(req.audio_url)
+        data = extract_waveform(audio_path)
+        return WaveformResponse(waveform=data)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cleanup(audio_path)
+
+
 @app.post("/render-video")
-async def render_video_endpoint(
+def render_video_endpoint(
         background_tasks: BackgroundTasks,
-        image: UploadFile = File(...),
-        audio_url: str = Form(...),
+        req: RenderVideoRequest,
 ):
     """
-    Takes a PNG (branded card) + an audio URL.
-    Returns an MP4 with the image held for the audio duration.
+    Receives waveform + duration + date + audio URL.
+    Generates animated frames, encodes them into an MP4 with the audio,
+    and returns the MP4.
     """
-    image_path = None
+    frames_dir = None
     audio_path = None
     output_path = None
 
     try:
-        # 1. Save the uploaded PNG
-        fd, image_path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        with open(image_path, "wb") as f:
-            f.write(await image.read())
+        # 1. Download the audio from Cloudinary
+        audio_path = download_audio(req.audio_url)
 
-        # 2. Download the audio from Cloudinary
-        audio_path = download_audio(audio_url)
+        # 2. Create a temp directory for the frames
+        frames_dir = tempfile.mkdtemp(prefix="frames_")
 
-        # 3. Combine into MP4
-        output_path = render_video(image_path, audio_path)
+        # 3. Generate the PNG frame sequence
+        frame_count, frame_duration = generate_frames(
+            waveform=req.waveform,
+            duration_seconds=req.duration_seconds,
+            created_at=req.created_at,
+            output_dir=frames_dir,
+        )
 
-        # 4. Schedule cleanup AFTER the response is sent
-        # (FileResponse needs the file to exist while streaming)
-        background_tasks.add_task(cleanup, image_path, audio_path, output_path)
+        print(f"[render-video] generated {frame_count} frames at {1.0/frame_duration:.1f} fps")
+
+        # 4. Encode the frames + audio into an MP4
+        output_path = render_video_from_frames(
+            frames_dir=frames_dir,
+            frame_count=frame_count,
+            frame_duration=frame_duration,
+            audio_path=audio_path,
+        )
+
+        # 5. Schedule cleanup AFTER the response is sent
+        background_tasks.add_task(_cleanup_all, frames_dir, audio_path, output_path)
 
         return FileResponse(
             output_path,
@@ -98,10 +137,22 @@ async def render_video_endpoint(
             filename="testimony.mp4",
         )
     except Exception as e:
-        # If anything failed, clean up immediately
-        cleanup(image_path, audio_path, output_path)
+        _cleanup_all(frames_dir, audio_path, output_path)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _cleanup_all(frames_dir, audio_path, output_path):
+    """Delete the frames directory, the audio temp file, and the output MP4."""
+    # Remove the frames directory tree
+    if frames_dir and os.path.isdir(frames_dir):
+        try:
+            shutil.rmtree(frames_dir)
+        except OSError:
+            pass
+
+    # Remove single files
+    cleanup(audio_path, output_path)
 
 
 if __name__ == "__main__":

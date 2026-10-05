@@ -6,29 +6,64 @@ const SHARE_URL = 'https://your-domain.com';
 const SHARE_CAPTION = `You can share your testimonies at ${SHARE_URL}`;
 const SHARE_TITLE = 'My Testimony';
 
+// Read the audio duration by loading a temporary <audio> element.
+function loadAudioDuration(url) {
+    return new Promise((resolve) => {
+        const audio = document.createElement('audio');
+        audio.preload = 'metadata';
+        audio.crossOrigin = 'anonymous';
+
+        const cleanup = () => {
+            audio.src = '';
+        };
+
+        audio.addEventListener('loadedmetadata', () => {
+            const d = Number.isFinite(audio.duration) ? audio.duration : 0;
+            cleanup();
+            resolve(d);
+        });
+
+        audio.addEventListener('error', () => {
+            cleanup();
+            resolve(0);
+        });
+
+        setTimeout(() => {
+            cleanup();
+            resolve(0);
+        }, 5000);
+
+        audio.src = url;
+    });
+}
+
 export default function ShareButton({ testimony, adminKey }) {
-    const [busy, setBusy] = useState(null);   // 'share' | 'download' | null
+    const [busy, setBusy] = useState(null);
     const [error, setError] = useState('');
     const [notice, setNotice] = useState('');
-    const [blob, setBlob] = useState(null);
+    const [blob, setBlob] = useState(null);           // PNG for text testimonies
+    const [duration, setDuration] = useState(0);      // audio duration (voice only)
     const [renderError, setRenderError] = useState('');
-
-    // ⚠️ TEMPORARY preview — remove later
-    const [previewUrl, setPreviewUrl] = useState(null);
 
     const isVoice = !!testimony.audioUrl;
 
-    // Pre-render the PNG card on mount
+    // Voice: load duration only (Python draws the card now)
+    // Text: render the PNG card
     useEffect(() => {
         let cancelled = false;
 
         (async () => {
             try {
-                const b = await renderTestimonyImage(testimony);
-                if (!cancelled) setBlob(b);
+                if (isVoice) {
+                    const d = await loadAudioDuration(testimony.audioUrl);
+                    if (!cancelled) setDuration(d);
+                } else {
+                    const b = await renderTestimonyImage(testimony);
+                    if (!cancelled) setBlob(b);
+                }
             } catch (err) {
                 if (!cancelled) {
-                    setRenderError(err.message || 'Failed to render card');
+                    setRenderError(err.message || 'Failed to prepare');
                 }
             }
         })();
@@ -36,7 +71,7 @@ export default function ShareButton({ testimony, adminKey }) {
         return () => {
             cancelled = true;
         };
-    }, [testimony]);
+    }, [testimony, isVoice]);
 
     const triggerDownload = useCallback((dataBlob, id, ext) => {
         const url = URL.createObjectURL(dataBlob);
@@ -58,18 +93,27 @@ export default function ShareButton({ testimony, adminKey }) {
         }
     }
 
-    // Sends the PNG + audio URL to Express, gets back an MP4 blob
+    // Ask Express to render the animated MP4 (JSON payload — no PNG)
     async function renderVideoMp4() {
-        const formData = new FormData();
-        formData.append('image', blob, 'card.png');
-        formData.append('audio_url', testimony.audioUrl);
+        if (!duration || duration <= 0) {
+            throw new Error('Audio duration not loaded yet. Try again.');
+        }
+        if (!Array.isArray(testimony.waveformData) || testimony.waveformData.length === 0) {
+            throw new Error('Waveform data missing for this testimony.');
+        }
 
         const res = await fetch(`${API_URL}/testimonies/render-video`, {
             method: 'POST',
             headers: {
+                'Content-Type': 'application/json',
                 Authorization: `Bearer ${adminKey}`,
             },
-            body: formData,
+            body: JSON.stringify({
+                audio_url: testimony.audioUrl,
+                waveform: testimony.waveformData,
+                duration_seconds: duration,
+                created_at: testimony.createdAt,
+            }),
         });
 
         if (!res.ok) {
@@ -158,17 +202,10 @@ export default function ShareButton({ testimony, adminKey }) {
         }
     }
 
-    // ⚠️ TEMPORARY preview
-    async function previewImage() {
-        try {
-            const b = blob || (await renderTestimonyImage(testimony));
-            setPreviewUrl(URL.createObjectURL(b));
-        } catch (err) {
-            setError(err.message || 'Preview failed');
-        }
-    }
-
-    const notReady = busy !== null || !blob;
+    const notReady =
+        busy !== null ||
+        (!isVoice && !blob) ||
+        (isVoice && !duration);
 
     return (
         <div className="share-actions">
@@ -177,7 +214,11 @@ export default function ShareButton({ testimony, adminKey }) {
                 disabled={notReady || !!renderError}
                 title={isVoice ? 'Share as video' : 'Share as image'}
             >
-                {busy === 'share' ? 'Sharing…' : !blob ? 'Preparing…' : 'Share'}
+                {busy === 'share'
+                    ? 'Sharing…'
+                    : notReady
+                        ? 'Preparing…'
+                        : 'Share'}
             </button>
 
             <button
@@ -190,50 +231,10 @@ export default function ShareButton({ testimony, adminKey }) {
                     : 'Download'}
             </button>
 
-            {/* ⚠️ TEMPORARY preview button — remove later */}
-            <button
-                type="button"
-                onClick={previewImage}
-                disabled={!blob}
-                title="Preview card"
-            >
-                Preview
-            </button>
-
             {error && <span className="error-inline">{error}</span>}
             {!error && notice && <span className="notice-inline">{notice}</span>}
             {renderError && !error && (
                 <span className="error-inline">{renderError}</span>
-            )}
-
-            {previewUrl && (
-                <div
-                    style={{
-                        position: 'fixed',
-                        inset: 0,
-                        background: 'rgba(0,0,0,0.85)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        zIndex: 9999,
-                        padding: 24,
-                    }}
-                    onClick={() => {
-                        URL.revokeObjectURL(previewUrl);
-                        setPreviewUrl(null);
-                    }}
-                >
-                    <img
-                        src={previewUrl}
-                        alt="testimony preview"
-                        style={{
-                            maxWidth: '90vw',
-                            maxHeight: '90vh',
-                            borderRadius: 8,
-                            boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
-                        }}
-                    />
-                </div>
             )}
         </div>
     );

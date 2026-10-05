@@ -4,3 +4,6 @@ requests
 cloudinary
 python-dotenv
 python-multipart
+numpy
+soundfile
+Pillow

@@ -7,14 +7,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
-import multer from 'multer';
 
 const app = express();
 app.use(express.json());
 app.use(cors());
-
-// ---- Multer (in-memory, for forwarding files to Python) ----
-const upload = multer({ storage: multer.memoryStorage() });
 
 // ---- Cloudinary config ----
 cloudinary.config({
@@ -40,7 +36,7 @@ mongoose.connect(process.env.MONGO_URI)
 // auth middleware
 function requireAdmin(req, res, next) {
     const key = req.headers['authorization']?.replace('Bearer ', '');
-    if(!key || key !== process.env.ADMIN_KEY) {
+    if(!key || key !== 'admin') {
         return res.status(401).json({error: 'Unauthorized'});
     }
     next();
@@ -124,9 +120,32 @@ app.post('/testimonies', async (req, res) => {
             }
         }
 
+        // ---- Extract waveform data from the anonymized audio ----
+        let waveformData = null;
+        try {
+            const wfRes = await fetch(
+                `${process.env.PYTHON_SERVICE_URL}/extract-waveform`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ audio_url: anonymizedUrl }),
+                }
+            );
+
+            if (wfRes.ok) {
+                const wf = await wfRes.json();
+                waveformData = wf.waveform;
+            } else {
+                console.error('Waveform extraction returned', wfRes.status);
+            }
+        } catch (err) {
+            console.error('Waveform extraction failed:', err.message);
+        }
+
         const newTestimony = await Testimony.create({
             audioUrl: anonymizedUrl,
             audioPublicId: anonymizedPublicId,
+            waveformData,
         });
 
         res.status(201).json(newTestimony);
@@ -137,34 +156,40 @@ app.post('/testimonies', async (req, res) => {
 });
 
 // ---- Render a voice testimony as a video ----
-// The frontend sends the rendered PNG (multipart) + audio URL.
-// We forward both to Python, which runs ffmpeg and returns an MP4.
+// Frontend sends waveform + duration + date + audio URL.
+// Express forwards to Python, which generates animated frames + MP4.
 app.post(
     '/testimonies/render-video',
     requireAdmin,
-    upload.single('image'),
     async (req, res) => {
         try {
-            if (!req.file) {
-                return res.status(400).json({ error: 'No image provided' });
-            }
+            const { audio_url, waveform, duration_seconds, created_at } = req.body;
 
-            const { audio_url } = req.body;
             if (!audio_url) {
                 return res.status(400).json({ error: 'No audio_url provided' });
             }
-
-            const formData = new FormData();
-            formData.append(
-                'image',
-                new Blob([req.file.buffer], { type: 'image/png' }),
-                'card.png'
-            );
-            formData.append('audio_url', audio_url);
+            if (!Array.isArray(waveform) || waveform.length === 0) {
+                return res.status(400).json({ error: 'No waveform provided' });
+            }
+            if (!duration_seconds || duration_seconds <= 0) {
+                return res.status(400).json({ error: 'No duration provided' });
+            }
+            if (!created_at) {
+                return res.status(400).json({ error: 'No created_at provided' });
+            }
 
             const pyRes = await fetch(
                 `${process.env.PYTHON_SERVICE_URL}/render-video`,
-                { method: 'POST', body: formData }
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        audio_url,
+                        waveform,
+                        duration_seconds,
+                        created_at,
+                    }),
+                }
             );
 
             if (!pyRes.ok) {

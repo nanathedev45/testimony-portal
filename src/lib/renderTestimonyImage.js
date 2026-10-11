@@ -22,6 +22,30 @@ function formatTime(seconds) {
     return `${m}:${String(r).padStart(2, '0')}`;
 }
 
+// Format an ISO date string → "Oct 4, 2026, 1:02 PM"
+// Hardcoded so browser locale never affects the output.
+function formatTestimonyDate(isoString) {
+    const d = new Date(isoString);
+
+    const months = [
+        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+
+    const month = months[d.getMonth()];
+    const day = d.getDate();
+    const year = d.getFullYear();
+
+    let hours = d.getHours();
+    const minutes = d.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+
+    const minutesPadded = String(minutes).padStart(2, '0');
+
+    return `${month} ${day}, ${year}, ${hours}:${minutesPadded} ${ampm}`;
+}
+
 function wrapText(ctx, text, maxWidth) {
     if (!text) return [];
     const words = text.split(/\s+/);
@@ -111,6 +135,7 @@ function drawVoiceNote(ctx, testimony, centerY, durationSeconds) {
     const waveformStartX = playCenterX + playRadius + gapAfterPlay;
     const totalBarSpace = waveformWidth / barCount;
     const actualBarWidth = totalBarSpace - barGap;
+    const barRadius = actualBarWidth / 2;   // fully-rounded pill ends
 
     // Small minimum height so silent chunks still show a sliver of a bar
     const minHeightFactor = 0.05;
@@ -121,27 +146,32 @@ function drawVoiceNote(ctx, testimony, centerY, durationSeconds) {
         let heightFactor;
 
         if (useRealData) {
-            // Sample the real data at this bar's position
             const idx = Math.min(
                 wf.length - 1,
                 Math.floor((i / barCount) * wf.length)
             );
             heightFactor = wf[idx] || 0;
         } else {
-            // Fallback: seeded pseudo-random shape
             const positionFactor = Math.sin((i / (barCount - 1)) * Math.PI);
             const randomFactor = 0.4 + rand() * 0.6;
             heightFactor = positionFactor * randomFactor;
         }
 
-        // Apply minimum height so silent parts still render visibly
         heightFactor = Math.max(minHeightFactor, heightFactor);
 
         const barHeight = waveformHeight * heightFactor;
         const x = waveformStartX + i * totalBarSpace;
         const y = playCenterY - barHeight / 2;
 
-        ctx.fillRect(x, y, actualBarWidth, barHeight);
+        // Rounded bar (pill) via ctx.roundRect where available,
+        // fallback to plain rect for very old browsers.
+        if (typeof ctx.roundRect === 'function') {
+            ctx.beginPath();
+            ctx.roundRect(x, y, actualBarWidth, barHeight, barRadius);
+            ctx.fill();
+        } else {
+            ctx.fillRect(x, y, actualBarWidth, barHeight);
+        }
     }
 
     // --- Timer below the waveform ---
@@ -219,13 +249,7 @@ export async function renderTestimonyImage(testimony, durationSeconds) {
     }
 
     // --- Date at bottom ---
-    const date = new Date(testimony.createdAt).toLocaleString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-    });
+    const date = formatTestimonyDate(testimony.createdAt);
 
     ctx.fillStyle = COLORS.textMuted;
     ctx.font = '400 24px ui-monospace, Consolas, monospace';

@@ -132,14 +132,12 @@ def _draw_waveform(
         y1 = y0 + bar_height
 
         if i < playhead_index:
-            # Bright yellow
             overlay_draw.rounded_rectangle(
                 [(x0, y0), (x1, y1)],
                 radius=radius,
                 fill=COLORS["accent"] + (255,),
             )
         else:
-            # Faded yellow
             overlay_draw.rounded_rectangle(
                 [(x0, y0), (x1, y1)],
                 radius=radius,
@@ -169,12 +167,12 @@ def _draw_date(img: Image.Image, date_str: str) -> None:
 
 
 def _format_date(created_at: str) -> str:
-    """Convert an ISO date string to a display-friendly form."""
+    """Convert an ISO date string to: 'Oct 4, 2026, 1:02 PM'."""
     try:
         from datetime import datetime
         cleaned = created_at.replace("Z", "+00:00")
         dt = datetime.fromisoformat(cleaned)
-        return dt.strftime("%b %d, %Y, %I:%M %p").replace(" 0", " ")
+        return dt.strftime("%b %-d, %Y, %-I:%M %p")
     except Exception:
         return created_at
 

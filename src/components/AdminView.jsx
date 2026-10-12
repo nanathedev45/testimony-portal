@@ -1,7 +1,7 @@
 import ShareButton from './ShareButton';
 import { useState, useEffect, useRef } from 'react';
 
-const VITE_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const SESSION_MINUTES = 30;
 const SESSION_MS = SESSION_MINUTES * 60 * 1000;
 const STORAGE_KEY = 'adminSession';

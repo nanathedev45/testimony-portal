@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { renderTestimonyImage } from '../lib/renderTestimonyImage';
 
-const API_URL = `${window.location.protocol}//${window.location.hostname}:3000`;
-const SHARE_URL = 'https://your-domain.com';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const SHARE_URL = 'https://woftestimonyportal.netlify.app';
 const SHARE_CAPTION = `You can share your testimonies at ${SHARE_URL}`;
 const SHARE_TITLE = 'My Testimony';
 

@@ -30,14 +30,13 @@ const distPath = path.join(__dirname, '../dist');
 
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB is running'))
-    .catch((err) => console.error('Error', err));
-
+    .catch((err) => console.error('Error connecting to MongoDB:', err));
 
 // auth middleware
 function requireAdmin(req, res, next) {
     const key = req.headers['authorization']?.replace('Bearer ', '');
     if(!key || key !== process.env.ADMIN_KEY) {
-        return res.status(401).json({error: 'Unauthorized'});
+        return res.status(401).json({ error: 'Unauthorized' });
     }
     next();
 }
@@ -46,7 +45,7 @@ function requireAdmin(req, res, next) {
 async function purgeExpired() {
     const cutoff = new Date(Date.now() - TRASH_MS);
     return Testimony.deleteMany({
-        deletedAt: { $ne: null, $lt: cutoff },
+        deletedAt: { $ne: null,$lt: cutoff },
     });
 }
 
@@ -77,24 +76,34 @@ app.post('/cloudinary/signature', (req, res) => {
     }
 });
 
-// ---- logic for submitting testimonies (text OR voice) ----
+// ---- Logic for submitting testimonies (text OR voice) ----
 app.post('/testimonies', async (req, res) => {
     try {
+        console.log('Incoming POST /testimonies body:', req.body);
         const { text, audioUrl, audioPublicId } = req.body;
 
-        if (!text?.trim() && !audioUrl) {
+        const hasText = text && typeof text === 'string' && text.trim().length > 0;
+        const hasAudio = audioUrl && typeof audioUrl === 'string' && audioUrl.trim().length > 0;
+
+        if (!hasText && !hasAudio) {
             return res.status(400).json({ error: 'Provide text or a voice recording' });
         }
 
-        // ---- Text testimony: save as-is ----
-        if (text?.trim()) {
+        // ---- Text testimony: save as-is and exit immediately ----
+        if (hasText) {
             const newTestimony = await Testimony.create({
                 text: text.trim(),
             });
+            console.log('Text testimony saved successfully:', newTestimony._id);
             return res.status(201).json(newTestimony);
         }
 
-        // ---- Voice testimony: anonymize first ----
+        // ---- Voice testimony: anonymize first via Python API ----
+        if (!process.env.PYTHON_SERVICE_URL) {
+            console.error('PYTHON_SERVICE_URL is not defined in environment variables.');
+            return res.status(500).json({ error: 'Voice processing service URL is not configured' });
+        }
+
         const pyRes = await fetch(`${process.env.PYTHON_SERVICE_URL}/anonymize`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -107,8 +116,7 @@ app.post('/testimonies', async (req, res) => {
             return res.status(500).json({ error: 'Voice anonymization failed' });
         }
 
-        const { audio_url: anonymizedUrl, public_id: anonymizedPublicId } =
-            await pyRes.json();
+        const { audio_url: anonymizedUrl, public_id: anonymizedPublicId } = await pyRes.json();
 
         if (audioPublicId) {
             try {
@@ -136,7 +144,7 @@ app.post('/testimonies', async (req, res) => {
                 const wf = await wfRes.json();
                 waveformData = wf.waveform;
             } else {
-                console.error('Waveform extraction returned', wfRes.status);
+                console.error('Waveform extraction returned status:', wfRes.status);
             }
         } catch (err) {
             console.error('Waveform extraction failed:', err.message);
@@ -148,16 +156,15 @@ app.post('/testimonies', async (req, res) => {
             waveformData,
         });
 
-        res.status(201).json(newTestimony);
+        console.log('Voice testimony saved successfully:', newTestimony._id);
+        return res.status(201).json(newTestimony);
     } catch (err) {
-        console.error('POST /testimonies failed:', err);
-        res.status(500).json({ error: err.message });
+        console.error('POST /testimonies failed with exception:', err);
+        return res.status(500).json({ error: err.message });
     }
 });
 
 // ---- Render a voice testimony as a video ----
-// Frontend sends waveform + duration + date + audio URL.
-// Express forwards to Python, which generates animated frames + MP4.
 app.post(
     '/testimonies/render-video',
     requireAdmin,
@@ -176,6 +183,10 @@ app.post(
             }
             if (!created_at) {
                 return res.status(400).json({ error: 'No created_at provided' });
+            }
+
+            if (!process.env.PYTHON_SERVICE_URL) {
+                return res.status(500).json({ error: 'Python service URL is not configured' });
             }
 
             const pyRes = await fetch(
@@ -201,28 +212,36 @@ app.post(
             const arrayBuffer = await pyRes.arrayBuffer();
             res.set('Content-Type', 'video/mp4');
             res.set('Content-Disposition', 'attachment; filename="testimony.mp4"');
-            res.send(Buffer.from(arrayBuffer));
+            return res.send(Buffer.from(arrayBuffer));
         } catch (err) {
             console.error('render-video proxy failed:', err);
-            res.status(500).json({ error: err.message });
+            return res.status(500).json({ error: err.message });
         }
     }
 );
 
-// live testimonies only (admin)
+// Live testimonies only (admin)
 app.get('/testimonies', requireAdmin, async (req, res) => {
-    const testimonies = await Testimony.find({ deletedAt: null }).sort({createdAt: -1});
-    res.json(testimonies);
+    try {
+        const testimonies = await Testimony.find({ deletedAt: null }).sort({ createdAt: -1 });
+        return res.json(testimonies);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
 });
 
-// trash bin — purges expired first, then returns what's left (admin)
+// Trash bin — purges expired first, then returns what's left (admin)
 app.get('/testimonies/trash', requireAdmin, async (req, res) => {
-    await purgeExpired();
-    const trashed = await Testimony.find({ deletedAt: { $ne: null } }).sort({ deletedAt: -1 });
-    res.json(trashed);
+    try {
+        await purgeExpired();
+        const trashed = await Testimony.find({ deletedAt: { $ne: null } }).sort({ deletedAt: -1 });
+        return res.json(trashed);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
 });
 
-// soft delete (admin) — moves to trash
+// Soft delete (admin) — moves to trash
 app.delete('/testimonies/:id', requireAdmin, async (req, res) => {
     try {
         const updated = await Testimony.findByIdAndUpdate(
@@ -230,20 +249,24 @@ app.delete('/testimonies/:id', requireAdmin, async (req, res) => {
             { deletedAt: new Date() },
             { new: true }
         );
-        if (!updated) return res.status(404).json({error: 'Not found'});
-        res.json(updated);
+        if (!updated) return res.status(404).json({ error: 'Not found' });
+        return res.json(updated);
     } catch (err) {
-        res.status(400).json({error: err.message});
+        return res.status(400).json({ error: err.message });
     }
 });
 
 // TEMPORARY — remove after testing
 app.get('/debug/audio-url', async (req, res) => {
-    const t = await Testimony.findOne({ audioUrl: { $ne: null } });
-    res.json({ audioUrl: t?.audioUrl || null });
+    try {
+        const t = await Testimony.findOne({ audioUrl: { $ne: null } });
+        return res.json({ audioUrl: t?.audioUrl || null });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
 });
 
-// restore from trash (admin)
+// Restore from trash (admin)
 app.post('/testimonies/:id/restore', requireAdmin, async (req, res) => {
     try {
         const updated = await Testimony.findByIdAndUpdate(
@@ -251,14 +274,14 @@ app.post('/testimonies/:id/restore', requireAdmin, async (req, res) => {
             { deletedAt: null },
             { new: true }
         );
-        if (!updated) return res.status(404).json({error: 'Not found'});
-        res.json(updated);
+        if (!updated) return res.status(404).json({ error: 'Not found' });
+        return res.json(updated);
     } catch (err) {
-        res.status(400).json({error: err.message});
+        return res.status(400).json({ error: err.message });
     }
 });
 
-// permanent delete (admin) — only works on items already in trash
+// Permanent delete (admin) — only works on items already in trash
 app.delete('/testimonies/:id/permanent', requireAdmin, async (req, res) => {
     try {
         const deleted = await Testimony.findOneAndDelete({
@@ -277,13 +300,13 @@ app.delete('/testimonies/:id/permanent', requireAdmin, async (req, res) => {
             }
         }
 
-        res.json({ ok: true, _id: deleted._id });
+        return res.json({ ok: true, _id: deleted._id });
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        return res.status(400).json({ error: err.message });
     }
 });
 
-// background purge — every hour
+// Background purge — every hour
 setInterval(async () => {
     try {
         const result = await purgeExpired();
@@ -308,4 +331,5 @@ if (fs.existsSync(distPath)) {
     console.log('No dist/ folder — API-only mode (dev)');
 }
 
-app.listen(process.env.PORT, () => console.log(`Server running on port ${process.env.PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

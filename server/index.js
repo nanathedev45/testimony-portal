@@ -36,7 +36,7 @@ mongoose.connect(process.env.MONGO_URI)
 // auth middleware
 function requireAdmin(req, res, next) {
     const key = req.headers['authorization']?.replace('Bearer ', '');
-    if(!key || key !== 'admin') {
+    if(!key || key !== process.env.ADMIN_KEY) {
         return res.status(401).json({error: 'Unauthorized'});
     }
     next();

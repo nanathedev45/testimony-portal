@@ -2,7 +2,7 @@ import { useState } from 'react';
 import VoiceRecorder from './VoiceRecorder.jsx';
 import micIcon from '../assets/micIcon.png';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const VITE_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 async function uploadToCloudinary(blob) {
     const sigRes = await fetch(`${API_URL}/cloudinary/signature`, {

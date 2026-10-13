@@ -3,7 +3,7 @@ import { renderTestimonyImage } from '../lib/renderTestimonyImage';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const SHARE_URL = 'https://woftestimonyportal.netlify.app';
-const SHARE_CAPTION = `You can share your testimonies at ${SHARE_URL}`;
+const SHARE_CAPTION = `Share your testimonies today at ${SHARE_URL} and bless someone.`;
 const SHARE_TITLE = 'My Testimony';
 
 // Read the audio duration by loading a temporary <audio> element.

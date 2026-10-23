@@ -1,16 +1,38 @@
-# React + Vite
+# Wind of Faith 2026 — Anonymous Testimony Portal
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A full-stack web application for collecting anonymous text and voice testimonies.
+Text testimonies are submitted directly; voice testimonies are automatically
+anonymized (pitch-shifted) before storage, and both can be shared as branded
+images or animated video cards.
 
-Currently, two official plugins are available:
+Built for the **Wind of Faith 2026** event by Assemblies of God, Ghana —
+Faith Assembly, Nungua.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+---
 
-## React Compiler
+## ✨ Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### Public
+- Submit **text** testimonies via a simple form
+- Submit **voice** testimonies by recording directly in the browser
+- Audio is anonymized server-side before being stored (privacy)
+- Responsive design, works on mobile
+- Social media links in the footer
 
-## Expanding the ESLint configuration
+### Admin (password-protected)
+- Session-based authentication with 30-minute auto-logout
+- View all **live** testimonies and a **trash** bin
+- Soft-delete testimonies (moved to trash, kept for 15 days)
+- Restore from trash or permanently delete
+- Automatic purge of testimonies older than 15 days in trash
+- Play back voice testimonies directly in the admin view
+- **Share/Download** as:
+  - **Text testimonies** → branded PNG image
+  - **Voice testimonies** → animated MP4 with a live waveform, playhead,
+    timer, and the voice recording as audio
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+---
+
+## 🏗️ Architecture
+
+The project uses **three services** running together:

@@ -3,6 +3,9 @@ import os
 import tempfile
 import json
 
+import numpy as np
+import soundfile as sf
+
 
 def get_duration(audio_path: str) -> float:
     """Return duration in seconds using ffprobe."""
@@ -22,29 +25,64 @@ def get_duration(audio_path: str) -> float:
     return float(data["format"]["duration"])
 
 
+def _extract_waveform(audio_path: str, num_bars: int = 48) -> list[float]:
+    """
+    Compute normalized RMS amplitude per bar.
+    Returned values are in [0, 1], with the peak chunk scaled to 1.0.
+    """
+    data, _ = sf.read(audio_path, always_2d=False)
+
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+
+    data = data.astype(np.float32)
+    total_samples = len(data)
+    if total_samples == 0:
+        return [0.0] * num_bars
+
+    chunk_size = total_samples // num_bars
+    values: list[float] = []
+
+    for i in range(num_bars):
+        start = i * chunk_size
+        end = start + chunk_size if i < num_bars - 1 else total_samples
+        chunk = data[start:end]
+        if len(chunk) > 0:
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
+        else:
+            rms = 0.0
+        values.append(rms)
+
+    peak = max(values) if values else 1.0
+    if peak > 0:
+        values = [v / peak for v in values]
+
+    return values
+
+
 def anonymize_voice(
         input_path: str,
         pitch_semitones: float = -4.0,
         formant_ratio: float = 1.15,
-) -> tuple[str, float]:
+) -> tuple[str, float, list[float]]:
     """
-    Apply pitch + formant shift to make a voice less identifiable.
-    Returns (output_path, duration_seconds).
+    Apply pitch shift to make a voice less identifiable.
 
-    - pitch_semitones: how many semitones to shift. +4 = noticeably higher, still human.
-    - formant_ratio: adjusts the "vocal tract size" independently of pitch.
-      Values >1 = smaller (more feminine), <1 = larger (more masculine).
+    Returns (output_path, duration_seconds, waveform).
+    waveform is a list of `num_bars` floats in [0, 1] representing RMS amplitude,
+    computed from the anonymized output so callers do not need a second fetch.
+
+    pitch_semitones: semitone offset. +4 raises, -4 lowers, all still human.
+    formant_ratio: reserved for future use; current filter keeps formants preserved.
     """
     fd, output_path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
 
-    # rubberband filter: pitch shift + formant preservation
-    # 'pitch' is the pitch multiplier = 2^(semitones/12)
+    # Pitch multiplier from semitones: 2^(semitones/12)
     pitch_multiplier = 2 ** (pitch_semitones / 12.0)
 
-    # Build the ffmpeg filter chain:
-    # - rubberband handles pitch + formant in one pass
-    # - aresample resets the timebase so output plays at normal speed
+    # rubberband handles pitch and formant in one pass; aresample restores
+    # a normal timebase on the output.
     filter_chain = (
         f"rubberband=pitch={pitch_multiplier}:formant=preserved:pitchq=quality,"
         f"aresample=48000"
@@ -52,21 +90,22 @@ def anonymize_voice(
 
     cmd = [
         "ffmpeg",
-        "-y",                       # overwrite output
+        "-y",
         "-i", input_path,
         "-af", filter_chain,
-        "-ac", "1",                 # mono
-        "-b:a", "128k",             # bitrate
+        "-ac", "1",
+        "-b:a", "128k",
         "-f", "mp3",
         output_path,
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Clean up the empty output file before raising
         if os.path.exists(output_path):
             os.remove(output_path)
         raise RuntimeError(f"ffmpeg failed: {result.stderr[-500:]}")
 
     duration = get_duration(output_path)
-    return output_path, duration
+    waveform = _extract_waveform(output_path)
+
+    return output_path, duration, waveform

@@ -1,27 +1,27 @@
+import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 
-# ---- Design tokens (match renderTestimonyImage.js as closely as possible) ----
+# Design tokens — values must match renderTestimonyImage.js
 WIDTH = 1080
 HEIGHT = 1080
 PADDING = 100
 
 COLORS = {
-    "bg": (57, 34, 130),              # #392282
-    "accent": (236, 231, 0),          # #ece700
-    "text": (245, 243, 255),          # #f5f3ff
-    "text_muted": (160, 152, 190),    # muted purple-ish white
+    "bg": (57, 34, 130),
+    "accent": (236, 231, 0),
+    "text": (245, 243, 255),
+    "text_muted": (160, 152, 190),
 }
 
-# Faded alpha for the not-yet-played bars (0-255)
+# Alpha applied to bars not yet reached by the playhead
 FADED_ALPHA = 70
 
-# ---- Font paths (macOS dev setup — swap to bundled fonts before deploy) ----
+# Bundled fonts are required in production; the macOS paths below are for local dev.
 FONT_REGULAR = "/System/Library/Fonts/Supplemental/Arial.ttf"
 FONT_BOLD = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
 FONT_MONO = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
-# ---- Layout constants ----
 HEADER_TEXT = "WIND OF FAITH 2026 ANONYMOUS TESTIMONY"
 HEADER_FONT_SIZE = 28
 HEADER_Y = PADDING
@@ -40,7 +40,7 @@ BAR_GAP = 6
 TIMER_FONT_SIZE = 28
 DATE_FONT_SIZE = 24
 
-FPS = 10  # frames per second
+FPS = 10
 
 
 def _format_time(seconds: float) -> str:
@@ -57,18 +57,27 @@ def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
+def _synthesize_waveform(num_bars: int = BAR_COUNT) -> list[float]:
+    """
+    Generate a placeholder waveform when real data is unavailable.
+    Uses a sine arc so the silhouette reads as a voice clip rather than random noise.
+    """
+    values = []
+    for i in range(num_bars):
+        peak = math.sin((i / (num_bars - 1)) * math.pi)
+        variation = 0.6 + 0.4 * math.sin(i * 1.7)
+        values.append(peak * variation)
+    return values
+
+
 def _draw_static_background(img: Image.Image) -> None:
-    """Draws the parts that stay the same across all frames."""
     draw = ImageDraw.Draw(img)
 
-    # Top yellow bar
     draw.rectangle([(0, 0), (WIDTH, 16)], fill=COLORS["accent"])
 
-    # Header text
     header_font = _load_font(FONT_BOLD, HEADER_FONT_SIZE)
     draw.text((PADDING, HEADER_Y), HEADER_TEXT, font=header_font, fill=COLORS["accent"])
 
-    # Divider
     draw.line(
         [(PADDING, DIVIDER_Y), (WIDTH - PADDING, DIVIDER_Y)],
         fill=(90, 70, 150),
@@ -77,14 +86,11 @@ def _draw_static_background(img: Image.Image) -> None:
 
 
 def _draw_play_button(draw: ImageDraw.ImageDraw) -> None:
-    """Draws the yellow play button with a triangle inside."""
     cx, cy = PLAY_CENTER_X, PLAY_CENTER_Y
     r = PLAY_RADIUS
 
-    # Circle
     draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=COLORS["accent"])
 
-    # Triangle (in bg color)
     tri_size = r * 0.7
     off_x = r * 0.15
     points = [
@@ -101,9 +107,8 @@ def _draw_waveform(
         progress: float,
 ) -> None:
     """
-    Draws the waveform with progressive fill.
-    Bars up to `progress` (0..1) are bright; bars after are faded.
-    Bars are drawn as rounded pills.
+    Draw each bar with a rounded-rectangle mask.
+    Bars behind the playhead render bright; ahead of it render faded.
     """
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
@@ -113,12 +118,8 @@ def _draw_waveform(
     total_bar_space = waveform_width / BAR_COUNT
     actual_bar_width = total_bar_space - BAR_GAP
 
-    # Pill radius: half the bar width gives fully rounded ends
     radius = actual_bar_width / 2
-
-    # Small minimum height so silent chunks still render visibly
     min_height_factor = 0.05
-
     playhead_index = int(progress * BAR_COUNT)
 
     for i in range(BAR_COUNT):
@@ -148,7 +149,6 @@ def _draw_waveform(
 
 
 def _draw_timer(img: Image.Image, current_seconds: float, total_seconds: float) -> None:
-    """Draws '0:03 / 0:07' below the waveform."""
     draw = ImageDraw.Draw(img)
 
     waveform_start_x = PLAY_CENTER_X + PLAY_RADIUS + GAP_AFTER_PLAY
@@ -167,7 +167,6 @@ def _draw_date(img: Image.Image, date_str: str) -> None:
 
 
 def _format_date(created_at: str) -> str:
-    """Convert an ISO date string to: 'Oct 4, 2026, 1:02 PM'."""
     try:
         from datetime import datetime
         cleaned = created_at.replace("Z", "+00:00")
@@ -185,16 +184,17 @@ def generate_frames(
         fps: int = FPS,
 ) -> tuple[int, float]:
     """
-    Generates PNG frames into output_dir.
-    Returns (frame_count, frame_duration).
-
-    Each frame is 1080x1080. Frames are named frame_0001.png, frame_0002.png, ...
+    Render PNG frames into output_dir and return (frame_count, frame_duration).
+    If waveform is empty or None, a synthetic shape is used so video rendering
+    still succeeds for testimonies stored before waveform extraction was added.
     """
     os.makedirs(output_dir, exist_ok=True)
 
+    if not waveform:
+        waveform = _synthesize_waveform()
+
     frame_duration = 1.0 / fps
     total_frames = max(1, int(round(duration_seconds * fps)))
-
     date_display = _format_date(created_at)
 
     for i in range(total_frames):

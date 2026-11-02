@@ -6,7 +6,6 @@ const SHARE_URL = 'https://woftestimonyportal.netlify.app';
 const SHARE_CAPTION = `Share your testimonies today at ${SHARE_URL} and bless someone.`;
 const SHARE_TITLE = 'My Testimony';
 
-// Read the audio duration by loading a temporary <audio> element.
 function loadAudioDuration(url) {
     return new Promise((resolve) => {
         const audio = document.createElement('audio');
@@ -47,8 +46,6 @@ export default function ShareButton({ testimony, adminKey }) {
 
     const isVoice = !!testimony.audioUrl;
 
-    // Voice: load duration only (Python draws the card now)
-    // Text: render the PNG card
     useEffect(() => {
         let cancelled = false;
 
@@ -93,14 +90,17 @@ export default function ShareButton({ testimony, adminKey }) {
         }
     }
 
-    // Ask Express to render the animated MP4 (JSON payload — no PNG)
+    // Request a rendered MP4 from the backend.
+    // If waveform data is missing (testimonies created before extraction was added),
+    // send an empty array — the Python renderer synthesizes a placeholder shape.
     async function renderVideoMp4() {
         if (!duration || duration <= 0) {
             throw new Error('Audio duration not loaded yet. Try again.');
         }
-        if (!Array.isArray(testimony.waveformData) || testimony.waveformData.length === 0) {
-            throw new Error('Waveform data missing for this testimony.');
-        }
+
+        const waveform = Array.isArray(testimony.waveformData) && testimony.waveformData.length > 0
+            ? testimony.waveformData
+            : [];
 
         const res = await fetch(`${API_URL}/testimonies/render-video`, {
             method: 'POST',
@@ -110,7 +110,7 @@ export default function ShareButton({ testimony, adminKey }) {
             },
             body: JSON.stringify({
                 audio_url: testimony.audioUrl,
-                waveform: testimony.waveformData,
+                waveform,
                 duration_seconds: duration,
                 created_at: testimony.createdAt,
             }),
